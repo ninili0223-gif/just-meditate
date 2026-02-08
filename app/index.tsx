@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
+  Image,
   StyleSheet,
   TouchableOpacity,
   Modal,
@@ -9,7 +10,16 @@ import {
 } from 'react-native';
 import { useKeepAwake } from 'expo-keep-awake';
 import { useAudioPlayer } from 'expo-audio';
+import { Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withRepeat,
+  withTiming,
+  Easing,
+  cancelAnimation,
+} from 'react-native-reanimated';
 import { ScreenContainer } from '../src/components/shared/ScreenContainer';
 import { useTimer } from '../src/hooks/useTimer';
 import { formatTime } from '../src/utils/formatTime';
@@ -18,14 +28,40 @@ import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS } from '../src/constants/the
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const audioSource = require('../assets/sounds/meditation_audio.mp3');
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const mandalaImage = require('../assets/mandala.png');
+
+// ── Dev config ──────────────────────────────
+const DEV_MODE = true;          // set to false for production (full 10 min)
+const DEV_DURATION_SECONDS = 15; // duration in seconds when DEV_MODE is on
+// ─────────────────────────────────────────────
+
 const DURATION_MINUTES = 10;
+const ROTATION_DURATION = 60000; // ms for one full rotation
 
 export default function MeditationScreen() {
   const { remaining, status, start, pause, resume, stop } = useTimer();
   const player = useAudioPlayer(audioSource);
   const [infoVisible, setInfoVisible] = useState(false);
+  const rotation = useSharedValue(0);
 
   useKeepAwake(status === 'running' ? 'meditation' : undefined);
+
+  // Start/stop rotation based on timer status
+  useEffect(() => {
+    if (status === 'running') {
+      rotation.value = withRepeat(
+        withTiming(360, { duration: ROTATION_DURATION, easing: Easing.linear }),
+        -1, // infinite
+        false,
+      );
+    } else if (status === 'paused') {
+      cancelAnimation(rotation);
+    } else {
+      cancelAnimation(rotation);
+      rotation.value = 0;
+    }
+  }, [status, rotation]);
 
   // Sync audio with timer completion
   useEffect(() => {
@@ -34,8 +70,13 @@ export default function MeditationScreen() {
     }
   }, [status, player]);
 
+  const animatedMandalaStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${rotation.value}deg` }],
+  }));
+
   const handleStart = useCallback(() => {
-    start(DURATION_MINUTES);
+    const duration = DEV_MODE ? DEV_DURATION_SECONDS / 60 : DURATION_MINUTES;
+    start(duration);
     player.seekTo(0);
     player.play();
   }, [start, player]);
@@ -55,6 +96,8 @@ export default function MeditationScreen() {
     player.pause();
     player.seekTo(0);
   }, [stop, player]);
+
+  const isActive = status === 'running' || status === 'paused';
 
   return (
     <ScreenContainer>
@@ -80,8 +123,13 @@ export default function MeditationScreen() {
           </TouchableOpacity>
         )}
 
-        {(status === 'running' || status === 'paused') && (
+        {isActive && (
           <>
+            <Animated.Image
+              source={mandalaImage}
+              style={[styles.mandala, animatedMandalaStyle]}
+              resizeMode="contain"
+            />
             <Text style={styles.timer}>{formatTime(remaining)}</Text>
             <View style={styles.controls}>
               {status === 'running' ? (
@@ -136,6 +184,8 @@ export default function MeditationScreen() {
   );
 }
 
+const MANDALA_SIZE = 280;
+
 const styles = StyleSheet.create({
   topBar: {
     flexDirection: 'row',
@@ -158,11 +208,16 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.background,
   },
+  mandala: {
+    width: MANDALA_SIZE,
+    height: MANDALA_SIZE,
+    marginBottom: SPACING.md,
+  },
   timer: {
-    fontSize: FONT_SIZES.timer,
-    fontWeight: '300',
-    color: COLORS.textPrimary,
-    fontVariant: ['tabular-nums'],
+    fontSize: 40,
+    color: '#B5D2F2',
+    fontFamily: Platform.OS === 'ios' ? 'Bradley Hand' : 'serif',
+    textAlign: 'center',
     marginBottom: SPACING.xxl,
   },
   controls: {
