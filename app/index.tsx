@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,8 @@ import {
   Pressable,
 } from 'react-native';
 import { useKeepAwake } from 'expo-keep-awake';
-import { useAudioPlayer } from 'expo-audio';
+import { Audio } from 'expo-av';
+import { useFonts } from 'expo-font';
 import { Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, {
@@ -20,6 +21,7 @@ import Animated, {
   Easing,
   cancelAnimation,
 } from 'react-native-reanimated';
+import MaskedView from '@react-native-masked-view/masked-view';
 import { ScreenContainer } from '../src/components/shared/ScreenContainer';
 import { useTimer } from '../src/hooks/useTimer';
 import { formatTime } from '../src/utils/formatTime';
@@ -31,9 +33,24 @@ const audioSource = require('../assets/sounds/meditation_audio.mp3');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const mandalaImage = require('../assets/mandala.png');
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const dogImage = require('../assets/dog.png');
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const chalkTexture = require('../assets/chalk_texture.png');
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const startIcon = require('../assets/start.png');
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const pauseIcon = require('../assets/pause.png');
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const restartIcon = require('../assets/restart.png');
+
 // ── Dev config ──────────────────────────────
 const DEV_MODE = true;          // set to false for production (full 10 min)
-const DEV_DURATION_SECONDS = 15; // duration in seconds when DEV_MODE is on
+const DEV_DURATION_SECONDS = 10; // duration in seconds when DEV_MODE is on
 // ─────────────────────────────────────────────
 
 const DURATION_MINUTES = 10;
@@ -41,11 +58,26 @@ const ROTATION_DURATION = 60000; // ms for one full rotation
 
 export default function MeditationScreen() {
   const { remaining, status, start, pause, resume, stop } = useTimer();
-  const player = useAudioPlayer(audioSource);
+  const soundRef = useRef<Audio.Sound | null>(null);
   const [infoVisible, setInfoVisible] = useState(false);
   const rotation = useSharedValue(0);
 
+  const [fontsLoaded] = useFonts({
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    'Caveat': require('../assets/fonts/Caveat-Regular.ttf'),
+  });
+
   useKeepAwake(status === 'running' ? 'meditation' : undefined);
+
+  // Configure audio mode and cleanup on unmount
+  useEffect(() => {
+    Audio.setAudioModeAsync({
+      playsInSilentModeIOS: true,
+    });
+    return () => {
+      soundRef.current?.unloadAsync();
+    };
+  }, []);
 
   // Start/stop rotation based on timer status
   useEffect(() => {
@@ -63,39 +95,64 @@ export default function MeditationScreen() {
     }
   }, [status, rotation]);
 
-  // Sync audio with timer completion
+  // Stop audio on timer completion
   useEffect(() => {
-    if (status === 'completed') {
-      player.pause();
+    if (status === 'completed' && soundRef.current) {
+      soundRef.current.getStatusAsync().then((s) => {
+        if (s.isLoaded) soundRef.current?.pauseAsync();
+      });
     }
-  }, [status, player]);
+  }, [status]);
 
   const animatedMandalaStyle = useAnimatedStyle(() => ({
     transform: [{ rotate: `${rotation.value}deg` }],
   }));
 
-  const handleStart = useCallback(() => {
+  const handleStart = useCallback(async () => {
     const duration = DEV_MODE ? DEV_DURATION_SECONDS / 60 : DURATION_MINUTES;
     start(duration);
-    player.seekTo(0);
-    player.play();
-  }, [start, player]);
 
-  const handlePause = useCallback(() => {
+    // Unload previous sound if any
+    if (soundRef.current) {
+      await soundRef.current.unloadAsync();
+    }
+
+    const { sound, status: audioStatus } = await Audio.Sound.createAsync(audioSource);
+    soundRef.current = sound;
+    console.log('Sound loaded:', audioStatus);
+    const playStatus = await sound.playAsync();
+    console.log('Play status:', playStatus);
+  }, [start]);
+
+  const handlePause = useCallback(async () => {
     pause();
-    player.pause();
-  }, [pause, player]);
+    if (soundRef.current) {
+      const s = await soundRef.current.getStatusAsync();
+      if (s.isLoaded) await soundRef.current.pauseAsync();
+    }
+  }, [pause]);
 
-  const handleResume = useCallback(() => {
+  const handleResume = useCallback(async () => {
     resume();
-    player.play();
-  }, [resume, player]);
+    if (soundRef.current) {
+      const s = await soundRef.current.getStatusAsync();
+      if (s.isLoaded) await soundRef.current.playAsync();
+    }
+  }, [resume]);
 
-  const handleRestart = useCallback(() => {
+  const handleRestart = useCallback(async () => {
+    if (soundRef.current) {
+      const s = await soundRef.current.getStatusAsync();
+      if (s.isLoaded) {
+        await soundRef.current.stopAsync();
+        await soundRef.current.unloadAsync();
+      }
+    }
+    soundRef.current = null;
     stop();
-    player.pause();
-    player.seekTo(0);
-  }, [stop, player]);
+  }, [stop]);
+
+  if (!fontsLoaded) return null;
 
   const isActive = status === 'running' || status === 'paused';
 
@@ -117,47 +174,76 @@ export default function MeditationScreen() {
 
       {/* Main content */}
       <View style={styles.content}>
+        {/* Screen 1: Idle */}
         {status === 'idle' && (
-          <TouchableOpacity style={styles.startButton} onPress={handleStart}>
-            <Text style={styles.startButtonText}>Start</Text>
-          </TouchableOpacity>
+          <View style={styles.idleContainer}>
+            <View style={styles.spacer} />
+            <TouchableOpacity style={styles.iconWithLabel} onPress={handleStart}>
+              <Image source={startIcon} style={styles.iconButton} resizeMode="contain" />
+              <Text style={styles.iconLabel}>start</Text>
+            </TouchableOpacity>
+          </View>
         )}
 
+        {/* Screen 2: Playing/Paused */}
         {isActive && (
-          <>
-            <Animated.Image
-              source={mandalaImage}
-              style={[styles.mandala, animatedMandalaStyle]}
-              resizeMode="contain"
-            />
-            <Text style={styles.timer}>{formatTime(remaining)}</Text>
+          <View style={styles.activeContainer}>
+            <View style={styles.activeTop}>
+              <Animated.Image
+                source={mandalaImage}
+                style={[styles.mandala, animatedMandalaStyle]}
+                resizeMode="contain"
+              />
+              <Text style={styles.timer}>{formatTime(remaining)}</Text>
+            </View>
             <View style={styles.controls}>
               {status === 'running' ? (
-                <TouchableOpacity style={styles.controlButton} onPress={handlePause}>
-                  <Text style={styles.controlButtonText}>Pause</Text>
+                <TouchableOpacity style={styles.iconWithLabel} onPress={handlePause}>
+                  <Image source={pauseIcon} style={styles.iconButtonSmall} resizeMode="contain" />
+                  <Text style={styles.iconLabel}>pause</Text>
                 </TouchableOpacity>
               ) : (
-                <TouchableOpacity style={styles.controlButton} onPress={handleResume}>
-                  <Text style={styles.controlButtonText}>Resume</Text>
+                <TouchableOpacity style={styles.iconWithLabel} onPress={handleResume}>
+                  <Image source={startIcon} style={styles.iconButtonSmall} resizeMode="contain" />
+                  <Text style={styles.iconLabel}>resume</Text>
                 </TouchableOpacity>
               )}
-              <TouchableOpacity
-                style={[styles.controlButton, styles.restartButton]}
-                onPress={handleRestart}
-              >
-                <Text style={styles.restartButtonText}>Restart</Text>
+              <TouchableOpacity style={styles.iconWithLabel} onPress={handleRestart}>
+                <Image source={restartIcon} style={styles.iconButtonSmall} resizeMode="contain" />
+                <Text style={styles.iconLabel}>restart</Text>
               </TouchableOpacity>
             </View>
-          </>
+          </View>
         )}
 
+        {/* Screen 3: Completed */}
         {status === 'completed' && (
-          <>
-            <Text style={styles.creditText}>Session Complete</Text>
-            <TouchableOpacity style={styles.startButton} onPress={handleRestart}>
-              <Text style={styles.startButtonText}>Restart</Text>
+          <View style={styles.completedContainer}>
+            <View style={styles.completedCenter}>
+              <Image
+                source={dogImage}
+                style={styles.dogImage}
+                resizeMode="contain"
+              />
+              <MaskedView
+                maskElement={
+                  <Text style={styles.creditText}>
+                    today's session is led by julie dohrman
+                  </Text>
+                }
+              >
+                <Image
+                  source={chalkTexture}
+                  style={styles.chalkFill}
+                  resizeMode="repeat"
+                />
+              </MaskedView>
+            </View>
+            <TouchableOpacity style={styles.iconWithLabel} onPress={handleRestart}>
+              <Image source={restartIcon} style={styles.iconButtonSmall} resizeMode="contain" />
+              <Text style={styles.iconLabel}>restart</Text>
             </TouchableOpacity>
-          </>
+          </View>
         )}
       </View>
 
@@ -170,7 +256,7 @@ export default function MeditationScreen() {
       >
         <Pressable style={styles.modalOverlay} onPress={() => setInfoVisible(false)}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalText}>abcdefg</Text>
+            <Text style={styles.modalText}>hi this is just meditate, in the world of clicks and choices , we want to simplify your life and make meditation stress free. You’ll receive a 10 guided meditation from our instructor. It’ll start right away once you </Text>
             <TouchableOpacity
               style={styles.modalClose}
               onPress={() => setInfoVisible(false)}
@@ -194,62 +280,96 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+  },
+
+  // Screen 1: Idle
+  idleContainer: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    paddingBottom: 120,
+  },
+  spacer: {
+    flex: 1,
+  },
+
+  // Screen 2: Active
+  activeContainer: {
+    flex: 1,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  activeTop: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  startButton: {
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: SPACING.xxl,
-    paddingVertical: SPACING.lg,
-    borderRadius: BORDER_RADIUS.full,
+
+  // Screen 3: Completed
+  completedContainer: {
+    flex: 1,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingBottom: SPACING.xxl,
   },
-  startButtonText: {
-    fontSize: FONT_SIZES.title,
-    fontWeight: '700',
-    color: COLORS.background,
+  completedCenter: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
+
+  // Shared
+  iconWithLabel: {
+    alignItems: 'center',
+    gap: SPACING.xs,
+  },
+  iconButton: {
+    width: 60,
+    height: 60,
+  },
+  iconButtonSmall: {
+    width: 48,
+    height: 48,
+  },
+  iconLabel: {
+    fontSize: 14,
+    color: '#8abbef',
+    fontFamily: 'Caveat',
+  },
+
   mandala: {
     width: MANDALA_SIZE,
     height: MANDALA_SIZE,
-    marginBottom: SPACING.md,
+    marginBottom: SPACING.lg,
   },
   timer: {
     fontSize: 40,
     color: '#B5D2F2',
     fontFamily: Platform.OS === 'ios' ? 'Bradley Hand' : 'serif',
+    fontStyle: 'italic',
     textAlign: 'center',
-    marginBottom: SPACING.xxl,
   },
   controls: {
     flexDirection: 'row',
-    gap: SPACING.md,
+    gap: SPACING.xxl,
+    paddingBottom: SPACING.xxl,
   },
-  controlButton: {
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: SPACING.xl,
-    paddingVertical: SPACING.md,
-    borderRadius: BORDER_RADIUS.full,
-  },
-  controlButtonText: {
-    fontSize: FONT_SIZES.subtitle,
-    fontWeight: '600',
-    color: COLORS.background,
-  },
-  restartButton: {
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: COLORS.textMuted,
-  },
-  restartButtonText: {
-    fontSize: FONT_SIZES.subtitle,
-    fontWeight: '600',
-    color: COLORS.textSecondary,
+  dogImage: {
+    width: 140,
+    height: 140,
+    marginBottom: SPACING.lg,
   },
   creditText: {
-    fontSize: FONT_SIZES.title,
-    fontWeight: '600',
-    color: COLORS.primary,
-    marginBottom: SPACING.xl,
+    fontSize: 20,
+    fontFamily: 'Caveat',
+    fontWeight: 'bold',
+    color: 'black',
+    textAlign: 'center',
+  },
+  chalkFill: {
+    width: 340,
+    height: 32,
+    tintColor: '#8abbef',
   },
   modalOverlay: {
     flex: 1,
